@@ -5,48 +5,42 @@ except ImportError:
     pass
 
 import hashlib
+from functools import wraps
 
 
 def _hashargs(args):
-    '''
-    Add each arguments's python hash to a md5 hash.
-    Reduces collision chance over simply hash(args), which is
-    only a 32bit value. Collisions in a hash table are ok,
-    collisions in a cache_memo lookup are not ok!
-    '''
-
+    '''Add each arguments's string representation to a md5 hash.'''
     md5 = hashlib.md5()
 
     for arg in args:
-        # if argument is a string, add it to the hash verbatium
-        if type(arg) is str:
-            md5.update(arg)
-        else:
-            md5.update(str(hash(arg)))
+        md5.update(str(arg))
 
     return md5.hexdigest()
 
 
-def cache_memo(fn, timeout=0):
-    '''
-    Memoise a function using the django cache. Beware collisions!
-    Do not use for sensitive data. Do not use unless you are
-    sure this is what you want, the other memo functions are safer.
-    There is a small but not insignificant chance this
-    can make a function return the answer for the wrong arguments.
-    Caveat emptor.
-    '''
+def _default_key(*args):
+    return _hashargs(tuple(args))
 
-    def _wrapped(*args):
-        # cache key is function name followed by arg hash
-        key = "memo_%s_%s" % (fn.__name__, _hashargs(args))
-        val = cache.get(key)
-        if val is not None:
+
+def cache_memo(timeout=0, cache_key=_default_key):
+    '''Memoise a function using the django cache. Beware collisions!'''
+
+    def _outer(fn):
+
+        @wraps(fn)
+        def _inner(*args):
+            # cache key is function name followed by arg hash
+            key = "memo_%s_%s" % (fn.__name__, cache_key(*args))
+            val = cache.get(key)
+            if val is not None:
+                return val
+            val = fn(*args)
+            cache.set(key, val, timeout)
             return val
-        val = fn(*args)
-        cache.set(key, val, timeout)
-        return val
-    return _wrapped
+
+        return _inner
+
+    return _outer
 
 
 class memo(object):
@@ -55,6 +49,7 @@ class memo(object):
     def __init__(self, fn):
         self.values = {}
         self.fn = fn
+        self.__doc__ = fn.__doc__
 
     def __call__(self, *args):
         if args in self.values:
@@ -68,6 +63,7 @@ def memo_method(method):
     '''Memoise a method (per instance).'''
     key = "_memo_%s" % method.__name__
 
+    @wraps(method)
     def _wrapped(self, *args):
         values = getattr(self, key, None)
         if values is None:
@@ -78,6 +74,7 @@ def memo_method(method):
         value = method(self, *args)
         values[args] = value
         return value
+
     return _wrapped
 
 
@@ -85,6 +82,7 @@ def memo_property(method):
     '''Memoise an object property.'''
     key = "_memo_property_%s" % method.__name__
 
+    @wraps(method)
     def _wrapped(self):
         value = getattr(self, key, None)
         if value is not None:
@@ -92,4 +90,5 @@ def memo_property(method):
         value = method(self)
         setattr(self, key, value)
         return value
+
     return property(_wrapped)
